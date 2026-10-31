@@ -1,0 +1,17 @@
+# Environment variables & secrets
+.env
+
+# Logs
+*.log
+trader.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Data and models (runtime state)
+data/*.json
+models/*.json
+
+# Archives
+*.zip

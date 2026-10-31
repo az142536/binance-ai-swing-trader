@@ -1,0 +1,11 @@
+# 幣安 AI 趨勢波段自動交易系統相依套件清單
+numpy>=1.24.0
+requests>=2.31.0
+tabulate>=0.9.0
+python-dotenv>=1.0.0
+
+# 選用套件 (若需要更進階的機器學習函式庫，可自行安裝):
+# scikit-learn>=1.3.0
+# lightgbm>=4.0.0
+# ccxt>=4.2.0
+
