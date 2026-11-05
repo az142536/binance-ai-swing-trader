@@ -121,34 +121,42 @@ class AISwingStrategy:
         position: SwingPosition,
         current_bar: Dict[str, float],
         atr: float,
-        ai_prob: float
+        ai_prob: float,
+        is_live: bool = False
     ) -> Dict[str, Any]:
         """
         評估持倉是否需止損、止盈或出場
+        參數 is_live:
+          - 若為 True (即時實盤/輪動模擬)：嚴格以最新即時現價 close 判定，杜絕一小時 K 線過去歷史最低點 low 引發的假止損！
+          - 若為 False (歷史回測)：使用整根已完成 K 線之 high/low 進行極值判定。
         """
-        low = current_bar["low"]
-        high = current_bar["high"]
         close = current_bar["close"]
+        high = current_bar["high"] if not is_live else close
+        low = current_bar["low"] if not is_live else close
 
-        # 更新吊燈移動止損
-        position.update_trailing_stop(high, atr, self.trailing_stop_atr_mult)
+        # 更新吊燈移動止損（實盤以即時現價 close 更新，避免被歷史高低點雜訊干擾）
+        check_high = close if is_live else high
+        position.update_trailing_stop(check_high, atr, self.trailing_stop_atr_mult)
 
         # 1. 優先檢查是否觸發目標大波段止盈 (3.0x ATR)
-        if high >= position.take_profit:
+        check_tp_price = close if is_live else high
+        if check_tp_price >= position.take_profit:
             return {
                 "should_sell": True,
-                "exit_price": position.take_profit,
+                "exit_price": check_tp_price,
                 "reason": f"達到目標大波段止盈 ({self.take_profit_atr_mult}x ATR)"
             }
 
         # 2. 檢查是否觸及移動止盈點或防守止損點
-        if low <= position.stop_loss:
-            exit_price = position.stop_loss
+        # 實盤中嚴格以即時現價 close 判定，杜絕 1 小時 K 線過去歷史最低點 low 引發的假止損！
+        check_sl_price = close if is_live else low
+        if check_sl_price <= position.stop_loss:
+            exit_price = check_sl_price
             is_profit = exit_price > position.entry_price
             reason = "移動止盈鎖定利潤" if is_profit else "觸發防守性止損"
             return {"should_sell": True, "exit_price": exit_price, "reason": reason}
 
-        # 3. AI 反轉警報：若 AI 信心暴跌至 20% 以下且價格跌破 21 EMA
+        # 3. AI 反轉警報：若 AI 信心暴跌至 20% 以下且已啟動移動止盈
         if ai_prob < 0.20 and position.is_trailing_active:
             return {
                 "should_sell": True,

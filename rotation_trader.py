@@ -41,6 +41,7 @@ class SmartRotationTrader:
         self.active_symbol: Optional[str] = None
         self.position: Optional[SwingPosition] = None
         self.trade_logs: List[Dict[str, Any]] = []
+        self.cooldown_until: Dict[str, float] = {}
         
         # 模型快取字典 (symbol -> AISwingModel)
         self.models: Dict[str, AISwingModel] = {}
@@ -70,11 +71,18 @@ class SmartRotationTrader:
                     self.position.highest_price = pos_data.get("highest_price", pos_data["entry_price"])
                     self.position.is_trailing_active = pos_data.get("is_trailing_active", False)
                 self.trade_logs = data.get("trade_logs", [])
+                raw_cds = data.get("cooldowns", {})
+                now_ts = time.time()
+                self.cooldown_until = {
+                    sym: float(ts) for sym, ts in raw_cds.items()
+                    if float(ts) > now_ts
+                }
             except Exception as e:
                 print(f"[提示] 載入輪動模擬狀態異常，將以全新狀態啟動: {e}")
 
     def _save_state(self):
         """將最新輪動資產與持倉持久化至硬碟"""
+        now_ts = time.time()
         data = {
             "balance_usdt": round(self.balance_usdt, 2),
             "has_position": self.has_position,
@@ -87,6 +95,10 @@ class SmartRotationTrader:
                 "take_profit": self.position.take_profit,
                 "highest_price": self.position.highest_price,
                 "is_trailing_active": self.position.is_trailing_active
+            },
+            "cooldowns": {
+                sym: round(ts, 1) for sym, ts in self.cooldown_until.items()
+                if ts > now_ts
             },
             "trade_logs": self.trade_logs[-50:],
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -172,8 +184,8 @@ class SmartRotationTrader:
             model = self._get_or_train_model(symbol)
             ai_prob = float(model.predict_bullish_prob(X[last_idx:last_idx+1])[0])
 
-            # 評估出場
-            exit_check = self.strategy.evaluate_exit(self.position, curr_bar, atr, ai_prob)
+            # 評估出場 (is_live=True 嚴格以即時現價 Close 判定，消除 1 小時 K 線歷史最低點造成的幽靈假止損)
+            exit_check = self.strategy.evaluate_exit(self.position, curr_bar, atr, ai_prob, is_live=True)
             floating_pnl = (close - self.position.entry_price) * self.position.quantity
             floating_pnl_pct = (close - self.position.entry_price) / self.position.entry_price * 100.0
             total_equity = self.balance_usdt + (close * self.position.quantity)
@@ -188,7 +200,12 @@ class SmartRotationTrader:
 
                 self.balance_usdt += net_proceeds
                 self.has_position = False
+                exited_sym = symbol
                 self.active_symbol = None
+
+                # 若為防守性止損，設置 1 小時 (3600 秒) 防雙巴冷卻期，絕不在 1 分鐘內反覆開倉
+                if "止損" in exit_check["reason"]:
+                    self.cooldown_until[exited_sym] = time.time() + 3600
 
                 self.trade_logs.append({
                     "symbol": symbol,
@@ -231,12 +248,20 @@ class SmartRotationTrader:
         # 情境二：空倉狀態 (全市場天梯掃描，挑選最猛起漲第一名)
         # ========================================================
         else:
+            now_ts = time.time()
             candidates = []
             highest_prob = 0.0
             highest_prob_symbol = ""
             highest_block_reason = ""
 
             for sym in self.watchlist:
+                # 檢查防守冷卻期 (若剛止損保護，冷凍 1 小時避免被反覆雙巴磨損)
+                if sym in self.cooldown_until and now_ts < self.cooldown_until[sym]:
+                    rem_min = int((self.cooldown_until[sym] - now_ts) / 60)
+                    if not highest_block_reason:
+                        highest_block_reason = f"{sym} 剛止損，處於防雙巴冷卻期中 (剩餘 {rem_min} 分鐘)"
+                    continue
+
                 try:
                     bars = self._get_symbol_bars(sym, total_bars=250)
                     X, indicators_cache = extract_features(bars)
@@ -343,10 +368,16 @@ class SmartRotationTrader:
                     "has_position": True
                 }
             else:
+                active_cds = [
+                    f"{s}({int((t - now_ts)/60)}分)"
+                    for s, t in self.cooldown_until.items() if t > now_ts
+                ]
+                cd_note = f" [防雙巴冷卻: {', '.join(active_cds)}]" if active_cds else ""
+
                 if highest_prob >= Config.AI_CONFIDENCE_THRESHOLD:
-                    detail = f"全市場掃描完畢：【{highest_prob_symbol}】AI信心高達 {highest_prob:.1%}，但風控保護等待最佳切入點 ({highest_block_reason})，100% USDT 耐心伏擊！"
+                    detail = f"全市場掃描完畢：【{highest_prob_symbol}】AI信心高達 {highest_prob:.1%}，但風控保護等待最佳切入點 ({highest_block_reason})，100% USDT 耐心伏擊！{cd_note}"
                 else:
-                    detail = f"全市場掃描完畢：8大主流幣目前無合適起漲點 (最高信心: {highest_prob_symbol} {highest_prob:.1%} < {Config.AI_CONFIDENCE_THRESHOLD:.0%})，100% USDT 空倉觀望保護本金！"
+                    detail = f"全市場掃描完畢：8大主流幣目前無合適起漲點 (最高信心: {highest_prob_symbol} {highest_prob:.1%} < {Config.AI_CONFIDENCE_THRESHOLD:.0%})，100% USDT 空倉觀望保護本金！{cd_note}"
 
                 return {
                     "timestamp": now_str,
