@@ -71,6 +71,7 @@ class SmartRotationTrader:
                     self.position.highest_price = pos_data.get("highest_price", pos_data["entry_price"])
                     self.position.is_trailing_active = pos_data.get("is_trailing_active", False)
                     self.position.is_breakeven_active = pos_data.get("is_breakeven_active", False)
+                    self.position.is_partial_tp_taken = pos_data.get("is_partial_tp_taken", False)
                 self.trade_logs = data.get("trade_logs", [])
                 raw_cds = data.get("cooldowns", {})
                 now_ts = time.time()
@@ -96,7 +97,8 @@ class SmartRotationTrader:
                 "take_profit": self.position.take_profit,
                 "highest_price": self.position.highest_price,
                 "is_trailing_active": self.position.is_trailing_active,
-                "is_breakeven_active": getattr(self.position, "is_breakeven_active", False)
+                "is_breakeven_active": getattr(self.position, "is_breakeven_active", False),
+                "is_partial_tp_taken": getattr(self.position, "is_partial_tp_taken", False)
             },
             "cooldowns": {
                 sym: round(ts, 1) for sym, ts in self.cooldown_until.items()
@@ -193,45 +195,89 @@ class SmartRotationTrader:
             total_equity = self.balance_usdt + (close * self.position.quantity)
 
             if exit_check["should_sell"]:
+                is_partial = exit_check.get("is_partial", False)
                 exit_price = exit_check["exit_price"]
-                proceeds = exit_price * self.position.quantity
-                fees = proceeds * Config.FEE_RATE
-                net_proceeds = proceeds - fees
-                realized_pnl = (exit_price - self.position.entry_price) * self.position.quantity - (fees * 2)
-                realized_pnl_pct = (exit_price - self.position.entry_price) / self.position.entry_price * 100.0
 
-                self.balance_usdt += net_proceeds
-                self.has_position = False
-                exited_sym = symbol
-                self.active_symbol = None
+                if is_partial:
+                    sell_ratio = exit_check.get("sell_ratio", 0.5)
+                    sell_qty = self.position.quantity * sell_ratio
+                    proceeds = exit_price * sell_qty
+                    fees = proceeds * Config.FEE_RATE
+                    net_proceeds = proceeds - fees
+                    realized_pnl = (exit_price - self.position.entry_price) * sell_qty - (fees * 2)
+                    realized_pnl_pct = (exit_price - self.position.entry_price) / self.position.entry_price * 100.0
 
-                # 若為防守性止損，設置 1 小時 (3600 秒) 防雙巴冷卻期，絕不在 1 分鐘內反覆開倉
-                if "觸發防守性止損" in exit_check["reason"]:
-                    self.cooldown_until[exited_sym] = time.time() + 3600
+                    self.balance_usdt += net_proceeds
+                    self.position.quantity -= sell_qty
+                    self.position.is_partial_tp_taken = True
+                    # 強制鎖死保本線 (成本價 + 0.2%)
+                    self.position.is_breakeven_active = True
+                    breakeven_stop = self.position.entry_price * 1.002
+                    if breakeven_stop > self.position.stop_loss:
+                        self.position.stop_loss = breakeven_stop
 
-                self.trade_logs.append({
-                    "symbol": symbol,
-                    "action": "SELL",
-                    "time": now_str,
-                    "price": exit_price,
-                    "quantity": self.position.quantity,
-                    "pnl_usd": round(realized_pnl, 2),
-                    "pnl_pct": round(realized_pnl_pct, 2),
-                    "reason": exit_check["reason"],
-                    "balance": round(self.balance_usdt, 2)
-                })
-                self.position = None
-                self._save_state()
+                    self.trade_logs.append({
+                        "symbol": symbol,
+                        "action": "SELL (PARTIAL 50%)",
+                        "time": now_str,
+                        "price": exit_price,
+                        "quantity": sell_qty,
+                        "pnl_usd": round(realized_pnl, 2),
+                        "pnl_pct": round(realized_pnl_pct, 2),
+                        "reason": exit_check["reason"],
+                        "balance": round(self.balance_usdt, 2)
+                    })
+                    self._save_state()
 
-                return {
-                    "timestamp": now_str,
-                    "phase": "EXIT",
-                    "symbol": symbol,
-                    "close_price": close,
-                    "detail": f"🏆 波段獲利平倉！{exit_check['reason']} | 賣出價: ${exit_price:,.2f} | 盈虧: {realized_pnl_pct:+.2f}% (${realized_pnl:+,.2f} USDT)",
-                    "total_equity": self.balance_usdt,
-                    "has_position": False
-                }
+                    total_equity = self.balance_usdt + (close * self.position.quantity)
+                    return {
+                        "timestamp": now_str,
+                        "phase": "PARTIAL_TP",
+                        "symbol": symbol,
+                        "close_price": close,
+                        "detail": f"💰 第一階段階梯止盈！賣出 50% 鎖定 +{realized_pnl_pct:.2f}% 現金利潤 (+${realized_pnl:,.2f} USDT)！剩餘部位保本續抱！",
+                        "total_equity": total_equity,
+                        "has_position": True
+                    }
+                else:
+                    proceeds = exit_price * self.position.quantity
+                    fees = proceeds * Config.FEE_RATE
+                    net_proceeds = proceeds - fees
+                    realized_pnl = (exit_price - self.position.entry_price) * self.position.quantity - (fees * 2)
+                    realized_pnl_pct = (exit_price - self.position.entry_price) / self.position.entry_price * 100.0
+
+                    self.balance_usdt += net_proceeds
+                    self.has_position = False
+                    exited_sym = symbol
+                    self.active_symbol = None
+
+                    # 若為防守性止損，設置 1 小時 (3600 秒) 防雙巴冷卻期，絕不在 1 分鐘內反覆開倉
+                    if "觸發防守性止損" in exit_check["reason"]:
+                        self.cooldown_until[exited_sym] = time.time() + 3600
+
+                    self.trade_logs.append({
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "time": now_str,
+                        "price": exit_price,
+                        "quantity": self.position.quantity,
+                        "pnl_usd": round(realized_pnl, 2),
+                        "pnl_pct": round(realized_pnl_pct, 2),
+                        "reason": exit_check["reason"],
+                        "balance": round(self.balance_usdt, 2)
+                    })
+                    self.position = None
+                    self._save_state()
+
+                    return {
+                        "timestamp": now_str,
+                        "phase": "EXIT",
+                        "symbol": symbol,
+                        "close_price": close,
+                        "detail": f"🏆 波段獲利平倉！{exit_check['reason']} | 賣出價: ${exit_price:,.2f} | 盈虧: {realized_pnl_pct:+.2f}% (${realized_pnl:+,.2f} USDT)",
+                        "total_equity": self.balance_usdt,
+                        "has_position": False
+                    }
             else:
                 self._save_state()
                 if self.position.is_trailing_active:
@@ -240,13 +286,15 @@ class SmartRotationTrader:
                     trail_desc = f"保本防護線: ${self.position.stop_loss:,.4f}"
                 else:
                     trail_desc = f"保護止損線: ${self.position.stop_loss:,.4f}"
+
+                partial_tag = " [已落袋50%現金]" if getattr(self.position, "is_partial_tp_taken", False) else ""
                 return {
                     "timestamp": now_str,
                     "phase": "HOLD",
                     "symbol": symbol,
                     "close_price": close,
                     "ai_bullish_prob": ai_prob,
-                    "detail": f"持倉抱牢中 (進場: ${self.position.entry_price:,.4f}, 浮盈: {floating_pnl_pct:+.2f}%, {trail_desc})",
+                    "detail": f"持倉抱牢中{partial_tag} (進場: ${self.position.entry_price:,.4f}, 浮盈: {floating_pnl_pct:+.2f}%, {trail_desc})",
                     "total_equity": total_equity,
                     "has_position": True
                 }

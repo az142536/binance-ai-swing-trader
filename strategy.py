@@ -10,12 +10,14 @@ class SwingPosition:
     def __init__(self, entry_price: float, quantity: float, entry_time: int, initial_stop: float, take_profit: float):
         self.entry_price = entry_price
         self.quantity = quantity
+        self.initial_quantity = quantity
         self.entry_time = entry_time
         self.stop_loss = initial_stop
         self.take_profit = take_profit
         self.highest_price = entry_price
         self.is_trailing_active = False
         self.is_breakeven_active = False
+        self.is_partial_tp_taken = False
 
     def update_trailing_stop(self, current_high: float, atr: float, trailing_mult: float):
         """根據新高點更新動態保本與吊燈動態移動止盈價位 (Breakeven & Chandelier Trailing Stop)"""
@@ -147,16 +149,28 @@ class AISwingStrategy:
         check_high = close if is_live else high
         position.update_trailing_stop(check_high, atr, self.trailing_stop_atr_mult)
 
-        # 1. 優先檢查是否觸發目標大波段止盈 (3.0x ATR)
+        # 1. 優先檢查是否觸發目標大波段止盈 (3.0x ATR) -> 全平清倉
         check_tp_price = close if is_live else high
         if check_tp_price >= position.take_profit:
             return {
                 "should_sell": True,
+                "is_partial": False,
                 "exit_price": check_tp_price,
                 "reason": f"達到目標大波段止盈 ({self.take_profit_atr_mult}x ATR)"
             }
 
-        # 2. 檢查是否觸及移動止盈點、保本防護線或初始防守止損點
+        # 2. 階梯分批止盈：浮盈達到 +2.5%，若尚未部分落袋，強制先賣 50% 鎖死現金獲利！
+        profit_pct = (check_high - position.entry_price) / position.entry_price
+        if not getattr(position, "is_partial_tp_taken", False) and profit_pct >= 0.025:
+            return {
+                "should_sell": True,
+                "is_partial": True,
+                "sell_ratio": 0.5,
+                "exit_price": check_high,
+                "reason": "達成第一階段波段目標 (+2.5%)，分批止盈 50% 鎖定現金利潤"
+            }
+
+        # 3. 檢查是否觸及移動止盈點、保本防護線或初始防守止損點
         # 實盤中嚴格以即時現價 close 判定，杜絕 1 小時 K 線過去歷史最低點 low 引發的假止損！
         check_sl_price = close if is_live else low
         if check_sl_price <= position.stop_loss:
@@ -167,12 +181,18 @@ class AISwingStrategy:
                 reason = "保本止損安全防護 (鎖定成本零風險)"
             else:
                 reason = "觸發防守性止損"
-            return {"should_sell": True, "exit_price": exit_price, "reason": reason}
+            return {
+                "should_sell": True,
+                "is_partial": False,
+                "exit_price": exit_price,
+                "reason": reason
+            }
 
-        # 3. AI 反轉警報：若 AI 信心暴跌至 20% 以下且已啟動移動止盈
+        # 4. AI 反轉警報：若 AI 信心暴跌至 20% 以下且已啟動移動止盈
         if ai_prob < 0.20 and position.is_trailing_active:
             return {
                 "should_sell": True,
+                "is_partial": False,
                 "exit_price": close,
                 "reason": "AI 偵測到波段趨勢終結 (動能衰竭預警出場)"
             }
