@@ -15,13 +15,22 @@ class SwingPosition:
         self.take_profit = take_profit
         self.highest_price = entry_price
         self.is_trailing_active = False
+        self.is_breakeven_active = False
 
     def update_trailing_stop(self, current_high: float, atr: float, trailing_mult: float):
-        """根據新高點更新吊燈動態移動止盈價位 (Chandelier Trailing Stop)"""
+        """根據新高點更新動態保本與吊燈動態移動止盈價位 (Breakeven & Chandelier Trailing Stop)"""
         if current_high > self.highest_price:
             self.highest_price = current_high
             
-            # 若波段浮盈已超過 2.0x ATR，正式啟動移動止盈機制
+            # 1. 浮盈達到 +2.0% 自動鎖死保本線 (覆蓋雙向手續費 0.15%~0.2%，實現零風險安全墊)
+            profit_pct = (self.highest_price - self.entry_price) / self.entry_price
+            if profit_pct >= 0.020:
+                self.is_breakeven_active = True
+                breakeven_stop = self.entry_price * 1.002
+                if breakeven_stop > self.stop_loss:
+                    self.stop_loss = breakeven_stop
+
+            # 2. 若波段浮盈已超過 2.0x ATR，正式啟動移動止盈機制
             profit_distance = self.highest_price - self.entry_price
             if profit_distance >= 2.0 * atr:
                 self.is_trailing_active = True
@@ -147,13 +156,17 @@ class AISwingStrategy:
                 "reason": f"達到目標大波段止盈 ({self.take_profit_atr_mult}x ATR)"
             }
 
-        # 2. 檢查是否觸及移動止盈點或防守止損點
+        # 2. 檢查是否觸及移動止盈點、保本防護線或初始防守止損點
         # 實盤中嚴格以即時現價 close 判定，杜絕 1 小時 K 線過去歷史最低點 low 引發的假止損！
         check_sl_price = close if is_live else low
         if check_sl_price <= position.stop_loss:
             exit_price = check_sl_price
-            is_profit = exit_price > position.entry_price
-            reason = "移動止盈鎖定利潤" if is_profit else "觸發防守性止損"
+            if position.is_trailing_active:
+                reason = "移動止盈鎖定利潤"
+            elif getattr(position, "is_breakeven_active", False):
+                reason = "保本止損安全防護 (鎖定成本零風險)"
+            else:
+                reason = "觸發防守性止損"
             return {"should_sell": True, "exit_price": exit_price, "reason": reason}
 
         # 3. AI 反轉警報：若 AI 信心暴跌至 20% 以下且已啟動移動止盈

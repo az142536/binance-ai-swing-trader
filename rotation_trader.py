@@ -70,6 +70,7 @@ class SmartRotationTrader:
                     )
                     self.position.highest_price = pos_data.get("highest_price", pos_data["entry_price"])
                     self.position.is_trailing_active = pos_data.get("is_trailing_active", False)
+                    self.position.is_breakeven_active = pos_data.get("is_breakeven_active", False)
                 self.trade_logs = data.get("trade_logs", [])
                 raw_cds = data.get("cooldowns", {})
                 now_ts = time.time()
@@ -94,7 +95,8 @@ class SmartRotationTrader:
                 "stop_loss": self.position.stop_loss,
                 "take_profit": self.position.take_profit,
                 "highest_price": self.position.highest_price,
-                "is_trailing_active": self.position.is_trailing_active
+                "is_trailing_active": self.position.is_trailing_active,
+                "is_breakeven_active": getattr(self.position, "is_breakeven_active", False)
             },
             "cooldowns": {
                 sym: round(ts, 1) for sym, ts in self.cooldown_until.items()
@@ -204,7 +206,7 @@ class SmartRotationTrader:
                 self.active_symbol = None
 
                 # 若為防守性止損，設置 1 小時 (3600 秒) 防雙巴冷卻期，絕不在 1 分鐘內反覆開倉
-                if "止損" in exit_check["reason"]:
+                if "觸發防守性止損" in exit_check["reason"]:
                     self.cooldown_until[exited_sym] = time.time() + 3600
 
                 self.trade_logs.append({
@@ -232,14 +234,19 @@ class SmartRotationTrader:
                 }
             else:
                 self._save_state()
-                trail_desc = f"移動止盈線: ${self.position.stop_loss:,.2f}" if self.position.is_trailing_active else f"保護止損線: ${self.position.stop_loss:,.2f}"
+                if self.position.is_trailing_active:
+                    trail_desc = f"移動止盈線: ${self.position.stop_loss:,.4f}"
+                elif getattr(self.position, "is_breakeven_active", False):
+                    trail_desc = f"保本防護線: ${self.position.stop_loss:,.4f}"
+                else:
+                    trail_desc = f"保護止損線: ${self.position.stop_loss:,.4f}"
                 return {
                     "timestamp": now_str,
                     "phase": "HOLD",
                     "symbol": symbol,
                     "close_price": close,
                     "ai_bullish_prob": ai_prob,
-                    "detail": f"持倉抱牢中 (進場: ${self.position.entry_price:,.2f}, 浮盈: {floating_pnl_pct:+.2f}%, {trail_desc})",
+                    "detail": f"持倉抱牢中 (進場: ${self.position.entry_price:,.4f}, 浮盈: {floating_pnl_pct:+.2f}%, {trail_desc})",
                     "total_equity": total_equity,
                     "has_position": True
                 }
