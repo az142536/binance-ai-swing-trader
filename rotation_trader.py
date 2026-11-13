@@ -165,6 +165,50 @@ class SmartRotationTrader:
         scanner = SymbolScanner(interval=self.interval)
         return scanner.get_symbol_klines(symbol, bars_count=total_bars)
 
+    def check_btc_regime(self) -> Dict[str, Any]:
+        """
+        比特幣大盤天氣過濾器 (BTC Market Regime Filter)
+        加密貨幣市場中，BTC 是全市場定海神針。
+        當 BTC 處於弱勢回調/空頭破位時，山寨幣的短線突破多為假突破(誘多接刀)。
+        此濾網強制在 BTC 疲軟時全網 100% USDT 空倉防守，避免震盪磨損。
+        """
+        if not Config.BTC_FILTER_ENABLED:
+            return {"is_bullish": True, "reason": "BTC 濾網已關閉"}
+
+        try:
+            bars = self._get_symbol_bars("BTCUSDT", total_bars=250)
+            if not bars or len(bars) < 50:
+                return {"is_bullish": True, "reason": "BTC 行情不足，略過大盤過濾"}
+
+            X, indicators_cache = extract_features(bars)
+            last_idx = len(bars) - 1
+            curr_bar = bars[last_idx]
+            close = curr_bar["close"]
+            ema50 = indicators_cache["ema50"][last_idx]
+            ema21 = indicators_cache["ema21"][last_idx]
+            macd_hist = indicators_cache["macd_hist"][last_idx]
+
+            # 判定大盤是否疲軟破位：
+            # 若 BTC 價格在 50 EMA 之下，且 (MACD 為負 或 短線跌破 21 EMA)
+            # 即表示大盤無順風動能，順應空方或在陰跌中
+            is_bearish = (close < ema50) and (macd_hist < 0 or close < ema21)
+
+            if is_bearish:
+                return {
+                    "is_bullish": False,
+                    "close": close,
+                    "ema50": ema50,
+                    "reason": f"BTC 大盤疲軟 (${close:,.1f} < EMA50 ${ema50:,.1f}，動能趨弱)"
+                }
+            return {
+                "is_bullish": True,
+                "close": close,
+                "ema50": ema50,
+                "reason": f"BTC 大盤偏多或回穩 (${close:,.1f} >= EMA50 或多頭動能支撐)"
+            }
+        except Exception as e:
+            return {"is_bullish": True, "reason": f"BTC 檢測異常略過: {e}"}
+
     def run_cycle(self) -> Dict[str, Any]:
         """
         執行單一輪次的輪動決策引擎：
@@ -308,6 +352,27 @@ class SmartRotationTrader:
             highest_prob = 0.0
             highest_prob_symbol = ""
             highest_block_reason = ""
+
+            # 1. 宏觀大盤天氣濾網 (BTC Market Regime Filter)
+            # 若 BTC 大盤處於弱勢回調或破位，全市場空倉防守避開假突破
+            btc_regime = self.check_btc_regime()
+            if not btc_regime["is_bullish"]:
+                active_cds = [
+                    f"{s}({int((t - now_ts)/60)}分)"
+                    for s, t in self.cooldown_until.items() if t > now_ts
+                ]
+                cd_note = f" [防雙巴冷卻: {', '.join(active_cds)}]" if active_cds else ""
+                detail = f"🛡️ 【大盤天氣過濾】{btc_regime['reason']}！全網 100% USDT 空倉防守避開假突破！{cd_note}"
+                return {
+                    "timestamp": now_str,
+                    "phase": "WAIT",
+                    "symbol": "BTCUSDT",
+                    "close_price": btc_regime.get("close", 0.0),
+                    "ai_bullish_prob": 0.0,
+                    "detail": detail,
+                    "total_equity": self.balance_usdt,
+                    "has_position": False
+                }
 
             for sym in self.watchlist:
                 # 檢查防守冷卻期 (若剛止損保護，冷凍 1 小時避免被反覆雙巴磨損)

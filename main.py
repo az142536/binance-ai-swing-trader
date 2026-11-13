@@ -325,6 +325,8 @@ def cmd_rotate(args):
 
             if phase == "BUY":
                 print(f"[{ts}] 🟢 [進場買入] {detail} | 總資產: ${equity:,.2f} USDT")
+            elif phase == "PARTIAL_TP":
+                print(f"[{ts}] 🟡 [階梯止盈] {detail} | 總資產: ${equity:,.2f} USDT")
             elif phase == "EXIT":
                 print(f"[{ts}] 🔴 [波段平倉] {detail} | 總資產: ${equity:,.2f} USDT")
             elif phase == "HOLD":

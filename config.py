@@ -48,7 +48,8 @@ class Config:
     # AI 趨勢波段策略參數
     # 策略風格模式: "active" (敏捷波段模式，不空等慢速均線，短線動能確認即進場做波段) 或 "sniper" (穩健狙擊模式，需站上 200 EMA)
     SWING_MODE = os.getenv("SWING_MODE", "active").lower()
-    AI_CONFIDENCE_THRESHOLD = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.65")) # AI 信心閥值 (65%)
+    AI_CONFIDENCE_THRESHOLD = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.75")) # AI 信心閥值 (升級為 75% 狙擊精準級)
+    BTC_FILTER_ENABLED = os.getenv("BTC_FILTER_ENABLED", "true").lower() in ("true", "1", "yes") # 比特幣大盤天氣過濾器
     STOP_LOSS_ATR_MULT = float(os.getenv("STOP_LOSS_ATR_MULT", "1.8"))             # 初始保護止損 (1.8x ATR，給予充分波動空間)
     TAKE_PROFIT_ATR_MULT = float(os.getenv("TAKE_PROFIT_ATR_MULT", "3.0"))         # 目標大波段止盈 (3.0x ATR)
     TRAILING_STOP_ATR_MULT = float(os.getenv("TRAILING_STOP_ATR_MULT", "2.0"))     # 移動止盈回撤空間 (2.0x ATR)
