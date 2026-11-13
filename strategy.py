@@ -142,39 +142,80 @@ class AISwingStrategy:
           - 若為 False (歷史回測)：使用整根已完成 K 線之 high/low 進行極值判定。
         """
         close = current_bar["close"]
-        high = current_bar["high"] if not is_live else close
-        low = current_bar["low"] if not is_live else close
+        if is_live:
+            position.update_trailing_stop(close, atr, self.trailing_stop_atr_mult)
 
-        # 更新吊燈移動止損（實盤以即時現價 close 更新，避免被歷史高低點雜訊干擾）
-        check_high = close if is_live else high
-        position.update_trailing_stop(check_high, atr, self.trailing_stop_atr_mult)
+            if close >= position.take_profit:
+                return {
+                    "should_sell": True,
+                    "is_partial": False,
+                    "exit_price": close,
+                    "reason": f"達到目標大波段止盈 ({self.take_profit_atr_mult}x ATR)"
+                }
 
-        # 1. 優先檢查是否觸發目標大波段止盈 (3.0x ATR) -> 全平清倉
-        check_tp_price = close if is_live else high
-        if check_tp_price >= position.take_profit:
-            return {
-                "should_sell": True,
-                "is_partial": False,
-                "exit_price": check_tp_price,
-                "reason": f"達到目標大波段止盈 ({self.take_profit_atr_mult}x ATR)"
-            }
+            profit_pct = (close - position.entry_price) / position.entry_price
+            if not getattr(position, "is_partial_tp_taken", False) and profit_pct >= 0.025:
+                return {
+                    "should_sell": True,
+                    "is_partial": True,
+                    "sell_ratio": 0.5,
+                    "exit_price": close,
+                    "reason": "達成第一階段波段目標 (+2.5%)，分批止盈 50% 鎖定現金利潤"
+                }
 
-        # 2. 階梯分批止盈：浮盈達到 +2.5%，若尚未部分落袋，強制先賣 50% 鎖死現金獲利！
-        profit_pct = (check_high - position.entry_price) / position.entry_price
-        if not getattr(position, "is_partial_tp_taken", False) and profit_pct >= 0.025:
-            return {
-                "should_sell": True,
-                "is_partial": True,
-                "sell_ratio": 0.5,
-                "exit_price": check_high,
-                "reason": "達成第一階段波段目標 (+2.5%)，分批止盈 50% 鎖定現金利潤"
-            }
+            check_sl_price = close
+        else:
+            high = current_bar["high"]
+            low = current_bar["low"]
 
-        # 3. 檢查是否觸及移動止盈點、保本防護線或初始防守止損點
-        # 實盤中嚴格以即時現價 close 判定，杜絕 1 小時 K 線過去歷史最低點 low 引發的假止損！
-        check_sl_price = close if is_live else low
+            # Use the stop that was active before this candle; a new trailing stop
+            # based on this candle's high cannot be assumed to have filled earlier.
+            if low <= position.stop_loss:
+                exit_price = min(current_bar.get("open", close), position.stop_loss)
+                if position.is_trailing_active:
+                    reason = "移動止盈鎖定利潤"
+                elif getattr(position, "is_breakeven_active", False):
+                    reason = "保本止損安全防護 (鎖定成本零風險)"
+                else:
+                    reason = "觸發防守性止損"
+                return {
+                    "should_sell": True,
+                    "is_partial": False,
+                    "exit_price": exit_price,
+                    "reason": reason
+                }
+
+            if high >= position.take_profit:
+                return {
+                    "should_sell": True,
+                    "is_partial": False,
+                    "exit_price": position.take_profit,
+                    "reason": f"達到目標大波段止盈 ({self.take_profit_atr_mult}x ATR)"
+                }
+
+            partial_tp_price = position.entry_price * 1.025
+            if not getattr(position, "is_partial_tp_taken", False) and high >= partial_tp_price:
+                position.update_trailing_stop(high, atr, self.trailing_stop_atr_mult)
+                return {
+                    "should_sell": True,
+                    "is_partial": True,
+                    "sell_ratio": 0.5,
+                    "exit_price": partial_tp_price,
+                    "reason": "達成第一階段波段目標 (+2.5%)，分批止盈 50% 鎖定現金利潤"
+                }
+
+            position.update_trailing_stop(high, atr, self.trailing_stop_atr_mult)
+            if ai_prob < 0.20 and position.is_trailing_active:
+                return {
+                    "should_sell": True,
+                    "is_partial": False,
+                    "exit_price": close,
+                    "reason": "AI 偵測到波段趨勢終結 (動能衰竭預警出場)"
+                }
+            return {"should_sell": False}
+
+        # Check the stop after updating it with the latest live price.
         if check_sl_price <= position.stop_loss:
-            exit_price = check_sl_price
             if position.is_trailing_active:
                 reason = "移動止盈鎖定利潤"
             elif getattr(position, "is_breakeven_active", False):
@@ -184,7 +225,7 @@ class AISwingStrategy:
             return {
                 "should_sell": True,
                 "is_partial": False,
-                "exit_price": exit_price,
+                "exit_price": check_sl_price,
                 "reason": reason
             }
 

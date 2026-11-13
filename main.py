@@ -310,7 +310,7 @@ def cmd_rotate(args):
     print("\n" + "=" * 68)
     print("       🚀 幣安全市場空倉智能波段輪動交易系統 (Smart Rotation)")
     print("       策略哲學：【持倉專注吃滿大波段，空倉全網自動切換最強起漲幣】")
-    print(f"       週期: {interval} | 風格: {mode.upper()} | 資金規模: ${capital:,.2f} USDT | 間隔: 每 {sleep_sec} 秒")
+    print(f"       週期: {interval} | 風格: {mode.upper()} | AI 門檻: {Config.AI_CONFIDENCE_THRESHOLD:.1%} | 資金規模: ${capital:,.2f} USDT | 間隔: 每 {sleep_sec} 秒")
     print("=" * 68 + "\n")
 
     trader = SmartRotationTrader(interval=interval, mode=mode, capital=capital)

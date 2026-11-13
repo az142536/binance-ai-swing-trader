@@ -7,7 +7,7 @@ import time
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from tabulate import tabulate
 import numpy as np
 
@@ -17,6 +17,20 @@ from features import extract_features, create_swing_wave_labels
 from ai_model import AISwingModel
 from strategy import AISwingStrategy, SwingPosition
 from scanner import DEFAULT_WATCHLIST, SymbolScanner
+
+
+def _calculate_net_pnl(
+    entry_price: float,
+    exit_price: float,
+    quantity: float,
+    fee_rate: float
+) -> Tuple[float, float]:
+    entry_notional = entry_price * quantity
+    entry_fee = entry_notional * fee_rate
+    exit_fee = exit_price * quantity * fee_rate
+    net_pnl = (exit_price - entry_price) * quantity - entry_fee - exit_fee
+    return net_pnl, (net_pnl / entry_notional) * 100.0
+
 
 class SmartRotationTrader:
     def __init__(
@@ -248,8 +262,12 @@ class SmartRotationTrader:
                     proceeds = exit_price * sell_qty
                     fees = proceeds * Config.FEE_RATE
                     net_proceeds = proceeds - fees
-                    realized_pnl = (exit_price - self.position.entry_price) * sell_qty - (fees * 2)
-                    realized_pnl_pct = (exit_price - self.position.entry_price) / self.position.entry_price * 100.0
+                    realized_pnl, realized_pnl_pct = _calculate_net_pnl(
+                        self.position.entry_price,
+                        exit_price,
+                        sell_qty,
+                        Config.FEE_RATE
+                    )
 
                     self.balance_usdt += net_proceeds
                     self.position.quantity -= sell_qty
@@ -287,8 +305,12 @@ class SmartRotationTrader:
                     proceeds = exit_price * self.position.quantity
                     fees = proceeds * Config.FEE_RATE
                     net_proceeds = proceeds - fees
-                    realized_pnl = (exit_price - self.position.entry_price) * self.position.quantity - (fees * 2)
-                    realized_pnl_pct = (exit_price - self.position.entry_price) / self.position.entry_price * 100.0
+                    realized_pnl, realized_pnl_pct = _calculate_net_pnl(
+                        self.position.entry_price,
+                        exit_price,
+                        self.position.quantity,
+                        Config.FEE_RATE
+                    )
 
                     self.balance_usdt += net_proceeds
                     self.has_position = False

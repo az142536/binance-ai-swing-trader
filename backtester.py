@@ -79,10 +79,13 @@ class Backtester:
                     raw_exit_p = exit_check["exit_price"]
                     # 考慮賣出滑點與手續費
                     actual_exit_p = raw_exit_p * (1.0 - self.slippage_rate)
-                    gross_pnl = (actual_exit_p - position.entry_price) * position.quantity
-                    fees = (position.entry_price + actual_exit_p) * position.quantity * self.fee_rate
+                    is_partial = exit_check.get("is_partial", False)
+                    sell_ratio = exit_check.get("sell_ratio", 1.0) if is_partial else 1.0
+                    sell_qty = position.quantity * sell_ratio
+                    gross_pnl = (actual_exit_p - position.entry_price) * sell_qty
+                    fees = (position.entry_price + actual_exit_p) * sell_qty * self.fee_rate
                     net_pnl = gross_pnl - fees
-                    pnl_pct = (actual_exit_p - position.entry_price) / position.entry_price
+                    pnl_pct = net_pnl / (position.entry_price * sell_qty)
 
                     capital += net_pnl
                     trade_history.append({
@@ -92,12 +95,21 @@ class Backtester:
                         "holding_bars": i - position.entry_time,
                         "entry_price": position.entry_price,
                         "exit_price": actual_exit_p,
+                        "quantity": sell_qty,
                         "pnl_usd": net_pnl,
                         "pnl_pct": pnl_pct * 100.0,
                         "reason": exit_check["reason"],
+                        "is_partial": is_partial,
                         "capital_after": capital
                     })
-                    position = None
+                    if is_partial:
+                        position.quantity -= sell_qty
+                        position.is_partial_tp_taken = True
+                        position.is_breakeven_active = True
+                        breakeven_stop = position.entry_price * 1.002
+                        position.stop_loss = max(position.stop_loss, breakeven_stop)
+                    else:
+                        position = None
 
             # 2. 若無持倉，檢查開倉條件
             elif position is None and i < n_bars - 1:
@@ -122,8 +134,10 @@ class Backtester:
             # 記錄權益資產
             current_equity = capital
             if position is not None:
-                floating_pnl = (close - position.entry_price) * position.quantity
-                current_equity += floating_pnl
+                estimated_exit = close * (1.0 - self.slippage_rate)
+                floating_pnl = (estimated_exit - position.entry_price) * position.quantity
+                estimated_fees = (position.entry_price + estimated_exit) * position.quantity * self.fee_rate
+                current_equity += floating_pnl - estimated_fees
             equity_curve.append(current_equity)
 
         # 計算統計指標
@@ -153,7 +167,7 @@ class Backtester:
                 "initial_capital": round(self.initial_capital, 2),
                 "final_capital": round(final_capital, 2),
                 "net_profit_usd": round(total_pnl, 2),
-                "total_return_pct": 0.0,
+                "total_return_pct": round(total_return_pct, 2),
                 "benchmark_return_pct": round(benchmark_return_pct, 2),
                 "total_trades": 0,
                 "win_trades": 0,
