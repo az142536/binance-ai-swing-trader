@@ -137,6 +137,12 @@ python main.py status
 python main.py live --symbol BTCUSDT --interval 1h --sleep 60
 ```
 
+### 7. 傳送每日模擬交易摘要到 Telegram
+1. 在 Telegram 的 `@BotFather` 建立私人 Bot，並在 Bot 對話中按「Start」。
+2. 將 `TELEGRAM_BOT_TOKEN` 與自己的 `TELEGRAM_CHAT_ID` 放在 VM 使用者家目錄的私密設定檔 `~/.config/binance-ai-swing-trader/telegram.env`，並將檔案權限設為 `600`。不要把 Bot Token 貼到聊天或提交到 Git。
+3. 確認 VM 的 `telegram.env` 設定完成後，可手動執行 `python3 telegram_report.py` 測試；程式會傳送當日 UTC 成交摘要。
+4. 可使用 cron 每日執行 `python3 telegram_report.py`。摘要列出可用現金與當日已實現損益；若仍有持倉，現金不含持倉市值。
+
 ---
 
 ## 🔑 幣安 API 設定與安全建議
