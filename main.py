@@ -16,6 +16,7 @@ if hasattr(sys.stderr, "reconfigure"):
         pass
 
 import time
+from datetime import datetime, timezone
 import argparse
 from pathlib import Path
 from tabulate import tabulate
@@ -310,11 +311,12 @@ def cmd_rotate(args):
     print("\n" + "=" * 68)
     print("       🚀 幣安全市場空倉智能波段輪動交易系統 (Smart Rotation)")
     print("       策略哲學：【持倉專注吃滿大波段，空倉全網自動切換最強起漲幣】")
-    print(f"       週期: {interval} | 風格: {mode.upper()} | AI 門檻: {Config.AI_CONFIDENCE_THRESHOLD:.1%} | 資金規模: ${capital:,.2f} USDT | 間隔: 每 {sleep_sec} 秒")
+    print(f"       週期: {interval} | 風格: {mode.upper()} | AI 門檻: {Config.AI_CONFIDENCE_THRESHOLD:.1%} | 日損熔斷: 4% / 連虧 3 筆 | 資金規模: ${capital:,.2f} USDT | 間隔: 每 {sleep_sec} 秒")
     print("=" * 68 + "\n")
 
     trader = SmartRotationTrader(interval=interval, mode=mode, capital=capital)
     count = 0
+    last_error_alert = None
     while True:
         try:
             status = trader.run_cycle()
@@ -346,6 +348,18 @@ def cmd_rotate(args):
             break
         except Exception as e:
             print(f"輪動循環異常: {e}")
+            now_monotonic = time.monotonic()
+            if last_error_alert is None or now_monotonic - last_error_alert >= 900:
+                try:
+                    from telegram_report import send_telegram_message
+
+                    send_telegram_message(
+                        f"⚠️ 模擬交易機器人執行異常\n"
+                        f"UTC {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}：{type(e).__name__}"
+                    )
+                except Exception as alert_error:
+                    print(f"Telegram 錯誤告警未送出：{alert_error}")
+                last_error_alert = now_monotonic
             time.sleep(10)
 
 def cmd_report(args):
@@ -367,6 +381,7 @@ def cmd_report(args):
     initial_cap = 100.0
     total_pnl = balance - initial_cap
     total_pnl_pct = (total_pnl / initial_cap) * 100.0
+    daily_risk = data.get("daily_risk", {})
 
     print("\n" + "=" * 65)
     print("         📊 幣安 AI 趨勢波段交易系統 - 最新戰績報表")
@@ -375,6 +390,8 @@ def cmd_report(args):
     print(f"  當前可用現金:   ${balance:,.2f} USDT")
     print(f"  累計實現淨收益: {total_pnl_pct:+.2f}% (${total_pnl:+,.2f} USDT)")
     print(f"  當前持倉狀態:   {'【' + str(active_sym) + ' 持倉中】' if has_pos else '【100% USDT 空倉觀望中】'}")
+    if daily_risk.get("day") == datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+        print(f"  當日風控狀態:   {daily_risk.get('pause_reason') or '正常'}")
     if has_pos and pos_data:
         print(f"  持倉詳情:       進場價: ${pos_data['entry_price']:,.2f} | 止損: ${pos_data['stop_loss']:,.2f} | 目標: ${pos_data['take_profit']:,.2f}")
     print("=" * 65)

@@ -34,6 +34,12 @@ def build_daily_report(state: Dict[str, Any], report_date: date) -> str:
         f"今日已實現損益：{realized_pnl:+.2f} USDT",
         f"今日成交：{len(daily_trades)} 筆（平倉/部分止盈 {len(closes)} 筆）",
     ]
+    risk_state = state.get("daily_risk", {})
+    if risk_state.get("day") == report_date.isoformat():
+        lines.append(
+            f"當日風控：{risk_state.get('pause_reason') or '正常'}"
+            f"（連續虧損 {risk_state.get('consecutive_losses', 0)} 筆）"
+        )
 
     position = state.get("position")
     if state.get("has_position") and position:
@@ -63,23 +69,13 @@ def build_daily_report(state: Dict[str, Any], report_date: date) -> str:
     return message
 
 
-def send_daily_report() -> None:
+def send_telegram_message(message: str) -> None:
     load_dotenv(SECRETS_FILE)
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         raise RuntimeError(f"設定 TELEGRAM_BOT_TOKEN 與 TELEGRAM_CHAT_ID：{SECRETS_FILE}")
 
-    state_file = DATA_DIR / "rotation_state.json"
-    if not state_file.exists():
-        raise FileNotFoundError(f"找不到模擬交易帳本：{state_file}")
-
-    import json
-
-    with state_file.open("r", encoding="utf-8") as file:
-        state = json.load(file)
-
-    message = build_daily_report(state, datetime.now(timezone.utc).date())
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         response = requests.post(
@@ -96,6 +92,20 @@ def send_daily_report() -> None:
     result = response.json()
     if not result.get("ok"):
         raise RuntimeError(f"Telegram 傳送失敗：{result.get('description', '未知錯誤')}")
+
+
+def send_daily_report() -> None:
+    state_file = DATA_DIR / "rotation_state.json"
+    if not state_file.exists():
+        raise FileNotFoundError(f"找不到模擬交易帳本：{state_file}")
+
+    import json
+
+    with state_file.open("r", encoding="utf-8") as file:
+        state = json.load(file)
+
+    message = build_daily_report(state, datetime.now(timezone.utc).date())
+    send_telegram_message(message)
     print("Telegram 每日模擬交易摘要已傳送。")
 
 

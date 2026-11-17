@@ -50,6 +50,23 @@ class DailyTelegramReportTests(unittest.TestCase):
         self.assertIn("今日沒有成交紀錄。", report)
         self.assertIn("目前持倉：空倉", report)
 
+    def test_includes_current_day_risk_pause(self):
+        report = build_daily_report(
+            {
+                "balance_usdt": 96.0,
+                "has_position": False,
+                "trade_logs": [],
+                "daily_risk": {
+                    "day": "2026-11-16",
+                    "pause_reason": "當日已實現損失達 4.00%",
+                    "consecutive_losses": 2,
+                },
+            },
+            date(2026, 11, 16),
+        )
+
+        self.assertIn("當日風控：當日已實現損失達 4.00%（連續虧損 2 筆）", report)
+
 
 if __name__ == "__main__":
     unittest.main()

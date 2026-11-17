@@ -33,6 +33,9 @@
 6. **回測限制**
    - 歷史 K 線若同時觸及止損與止盈，回測採較保守的止損優先假設；移動止損以該根 K 線結束後才更新。
    - 回測會估算手續費與滑點，但單幣回測不等於 `rotate` 的全市場輪動模擬，也不能保證未來結果。
+7. **輪動模擬監控保護**
+   - UTC 當日已實現損失達日初權益 4%，或連續 3 筆完整平倉虧損時，暫停當日新進場；持倉出場管理照常，UTC 午夜重設。
+   - 熔斷狀態保存於 `data/rotation_state.json`，觸發時嘗試傳送 Telegram 提醒。
 
 ---
 
@@ -141,7 +144,9 @@ python main.py live --symbol BTCUSDT --interval 1h --sleep 60
 1. 在 Telegram 的 `@BotFather` 建立私人 Bot，並在 Bot 對話中按「Start」。
 2. 將 `TELEGRAM_BOT_TOKEN` 與自己的 `TELEGRAM_CHAT_ID` 放在 VM 使用者家目錄的私密設定檔 `~/.config/binance-ai-swing-trader/telegram.env`，並將檔案權限設為 `600`。不要把 Bot Token 貼到聊天或提交到 Git。
 3. 確認 VM 的 `telegram.env` 設定完成後，可手動執行 `python3 telegram_report.py` 測試；程式會傳送當日 UTC 成交摘要。
-4. 可使用 cron 每日執行 `python3 telegram_report.py`。摘要列出可用現金與當日已實現損益；若仍有持倉，現金不含持倉市值。
+4. 可使用 cron 每日執行 `python3 telegram_report.py`。例如 UTC 每日 00:05：
+   `5 0 * * * cd /path/to/binance-ai-swing-trader && /usr/bin/python3 telegram_report.py`
+   摘要列出可用現金與當日已實現損益；若仍有持倉，現金不含持倉市值。
 
 ---
 

@@ -5,7 +5,7 @@
 
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from tabulate import tabulate
@@ -17,7 +17,10 @@ from features import extract_features, create_swing_wave_labels
 from ai_model import AISwingModel
 from strategy import AISwingStrategy, SwingPosition
 from scanner import DEFAULT_WATCHLIST, SymbolScanner
+from risk_controls import DailyRiskGuard
 
+DAILY_LOSS_LIMIT = 0.04
+MAX_CONSECUTIVE_LOSSES = 3
 
 def _calculate_net_pnl(
     entry_price: float,
@@ -56,6 +59,10 @@ class SmartRotationTrader:
         self.position: Optional[SwingPosition] = None
         self.trade_logs: List[Dict[str, Any]] = []
         self.cooldown_until: Dict[str, float] = {}
+        self.daily_risk = DailyRiskGuard(
+            daily_loss_limit=DAILY_LOSS_LIMIT,
+            max_consecutive_losses=MAX_CONSECUTIVE_LOSSES
+        )
         
         # 模型快取字典 (symbol -> AISwingModel)
         self.models: Dict[str, AISwingModel] = {}
@@ -87,6 +94,11 @@ class SmartRotationTrader:
                     self.position.is_breakeven_active = pos_data.get("is_breakeven_active", False)
                     self.position.is_partial_tp_taken = pos_data.get("is_partial_tp_taken", False)
                 self.trade_logs = data.get("trade_logs", [])
+                self.daily_risk = DailyRiskGuard(
+                    daily_loss_limit=DAILY_LOSS_LIMIT,
+                    max_consecutive_losses=MAX_CONSECUTIVE_LOSSES,
+                    state=data.get("daily_risk")
+                )
                 raw_cds = data.get("cooldowns", {})
                 now_ts = time.time()
                 self.cooldown_until = {
@@ -119,6 +131,7 @@ class SmartRotationTrader:
                 if ts > now_ts
             },
             "trade_logs": self.trade_logs[-50:],
+            "daily_risk": self.daily_risk.to_dict(),
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         with open(self.state_file, "w", encoding="utf-8") as f:
@@ -229,7 +242,8 @@ class SmartRotationTrader:
         - 若有持倉：全心全意專注於 active_symbol，執行 ATR 移動止盈與風控出場。
         - 若無持倉：全市場掃描強勢幣天梯，挑選出勝率最高且發起突破的第一名強勢幣建倉！
         """
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_utc = datetime.now(timezone.utc)
+        now_str = now_utc.strftime("%Y-%m-%d %H:%M:%S")
 
         # ========================================================
         # 情境一：持倉中 (專注吃滿當前幣種的大波段)
@@ -251,6 +265,7 @@ class SmartRotationTrader:
             floating_pnl = (close - self.position.entry_price) * self.position.quantity
             floating_pnl_pct = (close - self.position.entry_price) / self.position.entry_price * 100.0
             total_equity = self.balance_usdt + (close * self.position.quantity)
+            self.daily_risk.start_day(now_utc.date(), total_equity)
 
             if exit_check["should_sell"]:
                 is_partial = exit_check.get("is_partial", False)
@@ -268,6 +283,7 @@ class SmartRotationTrader:
                         sell_qty,
                         Config.FEE_RATE
                     )
+                    breaker_triggered = self.daily_risk.record_exit(realized_pnl, is_partial=True)
 
                     self.balance_usdt += net_proceeds
                     self.position.quantity -= sell_qty
@@ -290,6 +306,8 @@ class SmartRotationTrader:
                         "balance": round(self.balance_usdt, 2)
                     })
                     self._save_state()
+                    if breaker_triggered:
+                        self._send_risk_alert(breaker_triggered)
 
                     total_equity = self.balance_usdt + (close * self.position.quantity)
                     return {
@@ -311,6 +329,7 @@ class SmartRotationTrader:
                         self.position.quantity,
                         Config.FEE_RATE
                     )
+                    breaker_triggered = self.daily_risk.record_exit(realized_pnl)
 
                     self.balance_usdt += net_proceeds
                     self.has_position = False
@@ -334,6 +353,8 @@ class SmartRotationTrader:
                     })
                     self.position = None
                     self._save_state()
+                    if breaker_triggered:
+                        self._send_risk_alert(breaker_triggered)
 
                     return {
                         "timestamp": now_str,
@@ -370,6 +391,23 @@ class SmartRotationTrader:
         # ========================================================
         else:
             now_ts = time.time()
+            self.daily_risk.start_day(now_utc.date(), self.balance_usdt)
+            if self.daily_risk.pause_reason:
+                self._save_state()
+                return {
+                    "timestamp": now_str,
+                    "phase": "WAIT",
+                    "symbol": "ALL",
+                    "close_price": 0.0,
+                    "ai_bullish_prob": 0.0,
+                    "detail": (
+                        f"🛑 每日風控熔斷：{self.daily_risk.pause_reason}；"
+                        "暫停今日新進場，既有持倉出場管理照常。"
+                    ),
+                    "total_equity": self.balance_usdt,
+                    "has_position": False
+                }
+
             candidates = []
             highest_prob = 0.0
             highest_prob_symbol = ""
@@ -531,4 +569,16 @@ class SmartRotationTrader:
                     "total_equity": self.balance_usdt,
                     "has_position": False
                 }
+
+    @staticmethod
+    def _send_risk_alert(reason: str) -> None:
+        try:
+            from telegram_report import send_telegram_message
+
+            send_telegram_message(
+                f"🛑 模擬交易風控熔斷\n{reason}\n"
+                "今日暫停新進場；既有持倉出場管理照常，UTC 午夜重設。"
+            )
+        except Exception as exc:
+            print(f"[警告] Telegram 風控告警未送出：{exc}")
 
