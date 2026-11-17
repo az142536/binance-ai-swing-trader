@@ -1,10 +1,20 @@
 import unittest
 from datetime import date
 
-from telegram_report import build_daily_report
+from telegram_report import build_daily_report, extract_private_chat_ids
 
 
 class DailyTelegramReportTests(unittest.TestCase):
+    def test_extracts_only_private_chat_ids(self):
+        updates = [
+            {"message": {"chat": {"id": 123, "type": "private"}, "from": {"id": 123}}},
+            {"message": {"chat": {"id": -100, "type": "supergroup"}, "from": {"id": 123}}},
+            {"message": {"chat": {"id": 456, "type": "private"}, "from": {"id": 789}}},
+            {"message": {"chat": {"id": 123, "type": "private"}, "from": {"id": 123}}},
+        ]
+
+        self.assertEqual(extract_private_chat_ids(updates), [123])
+
     def test_summarizes_only_selected_utc_day_and_distinguishes_cash_from_position(self):
         state = {
             "balance_usdt": 42.5,

@@ -1,6 +1,7 @@
 """Send a daily paper-trading summary to a private Telegram chat."""
 
 import os
+import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -94,6 +95,43 @@ def send_telegram_message(message: str) -> None:
         raise RuntimeError(f"Telegram 傳送失敗：{result.get('description', '未知錯誤')}")
 
 
+def extract_private_chat_ids(updates: List[Dict[str, Any]]) -> List[int]:
+    chat_ids = {
+        int(message["chat"]["id"])
+        for update in updates
+        if (message := update.get("message"))
+        and message.get("chat", {}).get("type") == "private"
+        and message.get("from", {}).get("id") == message.get("chat", {}).get("id")
+    }
+    return sorted(chat_ids)
+
+
+def print_private_chat_ids() -> None:
+    load_dotenv(SECRETS_FILE)
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError(f"先設定 TELEGRAM_BOT_TOKEN：{SECRETS_FILE}")
+
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    try:
+        response = requests.get(url, timeout=15)
+    except requests.RequestException:
+        raise RuntimeError("連線 Telegram Bot API 失敗") from None
+
+    if response.status_code != 200:
+        raise RuntimeError(f"無法讀取 Bot 更新（HTTP {response.status_code}）")
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(f"無法讀取 Bot 更新：{result.get('description', '未知錯誤')}")
+
+    chat_ids = extract_private_chat_ids(result.get("result", []))
+    if not chat_ids:
+        raise RuntimeError("尚未收到私人訊息；請先在 Telegram 對 Bot 按 Start 並傳送訊息")
+    print("找到私人 Chat ID（只在 VM 終端機顯示）：")
+    for chat_id in chat_ids:
+        print(chat_id)
+
+
 def send_daily_report() -> None:
     state_file = DATA_DIR / "rotation_state.json"
     if not state_file.exists():
@@ -110,4 +148,9 @@ def send_daily_report() -> None:
 
 
 if __name__ == "__main__":
-    send_daily_report()
+    if sys.argv[1:] == ["--get-chat-id"]:
+        print_private_chat_ids()
+    elif not sys.argv[1:]:
+        send_daily_report()
+    else:
+        raise SystemExit("用法：python3 telegram_report.py [--get-chat-id]")
