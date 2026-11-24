@@ -1,0 +1,17 @@
+[Unit]
+Description=Private Binance AI paper-trading dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/binance-ai-swing-trader
+ExecStart=/usr/bin/python3 %h/binance-ai-swing-trader/dashboard.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target

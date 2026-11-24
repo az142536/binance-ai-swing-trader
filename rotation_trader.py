@@ -18,6 +18,7 @@ from ai_model import AISwingModel
 from strategy import AISwingStrategy, SwingPosition
 from scanner import DEFAULT_WATCHLIST, SymbolScanner
 from risk_controls import DailyRiskGuard
+from dashboard_control import load_control_state
 
 DAILY_LOSS_LIMIT = 0.04
 MAX_CONSECUTIVE_LOSSES = 3
@@ -408,6 +409,19 @@ class SmartRotationTrader:
                     "has_position": False
                 }
 
+            if load_control_state()["pause_new_entries"]:
+                self._save_state()
+                return {
+                    "timestamp": now_str,
+                    "phase": "WAIT",
+                    "symbol": "ALL",
+                    "close_price": 0.0,
+                    "ai_bullish_prob": 0.0,
+                    "detail": "網頁控制台已暫停新進場；目前空倉，等待恢復。",
+                    "total_equity": self.balance_usdt,
+                    "has_position": False
+                }
+
             candidates = []
             highest_prob = 0.0
             highest_prob_symbol = ""
@@ -492,6 +506,18 @@ class SmartRotationTrader:
 
             # 若有符合進場條件的幣種，挑選得分最高的冠軍進場
             if candidates:
+                if load_control_state()["pause_new_entries"]:
+                    self._save_state()
+                    return {
+                        "timestamp": now_str,
+                        "phase": "WAIT",
+                        "symbol": "ALL",
+                        "close_price": 0.0,
+                        "ai_bullish_prob": 0.0,
+                        "detail": "網頁控制台已暫停新進場；本輪略過進場。",
+                        "total_equity": self.balance_usdt,
+                        "has_position": False
+                    }
                 candidates.sort(key=lambda x: x["score"], reverse=True)
                 winner = candidates[0]
                 win_sym = winner["symbol"]

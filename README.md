@@ -148,6 +148,50 @@ python main.py live --symbol BTCUSDT --interval 1h --sleep 60
    `5 0 * * * cd /path/to/binance-ai-swing-trader && /usr/bin/python3 telegram_report.py`
    摘要列出可用現金與當日已實現損益；若仍有持倉，現金不含持倉市值。
 
+### 8. 手機模擬交易控制台
+
+`dashboard.py` 提供手機友善的私有網頁，可查看輪動機器人狀態、持倉與止損／目標、最近交易與執行輸出，並可暫停／恢復新進場或啟停**模擬**輪動程序。它不提供實盤下單或策略參數修改。
+
+暫停新進場不會停止現有持倉的出場管理；停止整個程序則會中斷持倉監控。啟動按鈕使用固定的 `rotate --mode active` 模擬命令。控制台會拒絕重複啟動已由 CLI 執行的輪動程序。
+
+安全要求：
+
+- 控制台只綁定 `127.0.0.1`，不可直接公開 VM 埠，也不可使用 Tailscale Funnel。
+- 從手機透過 Tailscale 私有網路與 Tailscale Serve 的 HTTPS 網址存取；手機和 VM 必須登入同一個 Tailnet。
+- 另設至少 16 字元控制台密碼，存在 `~/.config/binance-ai-swing-trader/dashboard.env`，檔案權限設為 `600`。不要將密碼或 API 金鑰提交至 Git。
+- 若 VM 上已經有手動啟動的輪動程序，先安全停止舊程序，再由控制台啟動新版；不可同時跑兩個輪動程序。
+
+在 VM 設定私密密碼檔（密碼不要貼到聊天或 Git）：
+
+```bash
+install -d -m 700 ~/.config/binance-ai-swing-trader
+nano ~/.config/binance-ai-swing-trader/dashboard.env
+chmod 600 ~/.config/binance-ai-swing-trader/dashboard.env
+```
+
+檔案內容只需一行 `DASHBOARD_PASSWORD=` 後接一組至少 16 字元的密碼。設定好後，可在專案目錄直接啟動控制台：
+
+```bash
+python3 dashboard.py
+```
+
+若要讓控制台在 VM 登出後繼續執行，可安裝範例 user service：
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/binance-ai-dashboard.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now binance-ai-dashboard.service
+```
+
+若要在 VM 登出後或重新開機後仍執行 user service，管理者需為該 Linux 帳號啟用 linger。另一個 VM 終端機將本機 8765 埠透過 Tailscale Serve 提供給 Tailnet：
+
+```bash
+tailscale serve --bg 8765
+```
+
+使用 Tailscale 顯示的 HTTPS 網址在手機瀏覽器開啟。Tailscale Serve 需在 Tailnet 啟用 HTTPS 憑證；請勿改用公開 Funnel。停止該 systemd service 會一併停止它啟動的模擬機器人；日常操作請優先使用網頁按鈕。
+
 ---
 
 ## 🔑 幣安 API 設定與安全建議

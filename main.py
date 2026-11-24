@@ -16,6 +16,9 @@ if hasattr(sys.stderr, "reconfigure"):
         pass
 
 import time
+import fcntl
+import signal
+import threading
 from datetime import datetime, timezone
 import argparse
 from pathlib import Path
@@ -314,53 +317,69 @@ def cmd_rotate(args):
     print(f"       週期: {interval} | 風格: {mode.upper()} | AI 門檻: {Config.AI_CONFIDENCE_THRESHOLD:.1%} | 日損熔斷: 4% / 連虧 3 筆 | 資金規模: ${capital:,.2f} USDT | 間隔: 每 {sleep_sec} 秒")
     print("=" * 68 + "\n")
 
+    lock_file = (DATA_DIR / "rotation.lock").open("w", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        print("[X] 輪動模擬機器人已在執行；拒絕重複啟動。")
+        return
+
     trader = SmartRotationTrader(interval=interval, mode=mode, capital=capital)
     count = 0
     last_error_alert = None
-    while True:
-        try:
-            status = trader.run_cycle()
-            phase = status["phase"]
-            ts = status["timestamp"]
-            equity = status["total_equity"]
-            detail = status["detail"]
+    stop_event = threading.Event()
+    previous_sigterm = signal.signal(signal.SIGTERM, lambda _signum, _frame: stop_event.set())
+    try:
+        while not stop_event.is_set():
+            try:
+                status = trader.run_cycle()
+                phase = status["phase"]
+                ts = status["timestamp"]
+                equity = status["total_equity"]
+                detail = status["detail"]
 
-            if phase == "BUY":
-                print(f"[{ts}] 🟢 [進場買入] {detail} | 總資產: ${equity:,.2f} USDT")
-            elif phase == "PARTIAL_TP":
-                print(f"[{ts}] 🟡 [階梯止盈] {detail} | 總資產: ${equity:,.2f} USDT")
-            elif phase == "EXIT":
-                print(f"[{ts}] 🔴 [波段平倉] {detail} | 總資產: ${equity:,.2f} USDT")
-            elif phase == "HOLD":
-                sym = status["symbol"]
-                px = status["close_price"]
-                prob = status.get("ai_bullish_prob", 0.0)
-                print(f"[{ts}] 🔵 [持倉專注] {sym} (${px:,.2f}, AI信心: {prob:.1%}) | {detail} | 總資產: ${equity:,.2f} USDT")
-            elif phase == "WAIT":
-                print(f"[{ts}] ⚪ [空倉觀望] {detail} | 總資產: ${equity:,.2f} USDT")
+                if phase == "BUY":
+                    print(f"[{ts}] 🟢 [進場買入] {detail} | 總資產: ${equity:,.2f} USDT")
+                elif phase == "PARTIAL_TP":
+                    print(f"[{ts}] 🟡 [階梯止盈] {detail} | 總資產: ${equity:,.2f} USDT")
+                elif phase == "EXIT":
+                    print(f"[{ts}] 🔴 [波段平倉] {detail} | 總資產: ${equity:,.2f} USDT")
+                elif phase == "HOLD":
+                    sym = status["symbol"]
+                    px = status["close_price"]
+                    prob = status.get("ai_bullish_prob", 0.0)
+                    print(f"[{ts}] 🔵 [持倉專注] {sym} (${px:,.2f}, AI信心: {prob:.1%}) | {detail} | 總資產: ${equity:,.2f} USDT")
+                elif phase == "WAIT":
+                    print(f"[{ts}] ⚪ [空倉觀望] {detail} | 總資產: ${equity:,.2f} USDT")
 
-            count += 1
-            if loops > 0 and count >= loops:
+                count += 1
+                if loops > 0 and count >= loops:
+                    break
+                if stop_event.wait(sleep_sec):
+                    break
+            except KeyboardInterrupt:
+                print("\n智能輪動交易已被手動終止。")
                 break
-            time.sleep(sleep_sec)
-        except KeyboardInterrupt:
-            print("\n智能輪動交易已被手動終止。")
-            break
-        except Exception as e:
-            print(f"輪動循環異常: {e}")
-            now_monotonic = time.monotonic()
-            if last_error_alert is None or now_monotonic - last_error_alert >= 900:
-                try:
-                    from telegram_report import send_telegram_message
+            except Exception as e:
+                print(f"輪動循環異常: {e}")
+                now_monotonic = time.monotonic()
+                if last_error_alert is None or now_monotonic - last_error_alert >= 900:
+                    try:
+                        from telegram_report import send_telegram_message
 
-                    send_telegram_message(
-                        f"⚠️ 模擬交易機器人執行異常\n"
-                        f"UTC {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}：{type(e).__name__}"
-                    )
-                except Exception as alert_error:
-                    print(f"Telegram 錯誤告警未送出：{alert_error}")
-                last_error_alert = now_monotonic
-            time.sleep(10)
+                        send_telegram_message(
+                            f"⚠️ 模擬交易機器人執行異常\n"
+                            f"UTC {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}：{type(e).__name__}"
+                        )
+                    except Exception as alert_error:
+                        print(f"Telegram 錯誤告警未送出：{alert_error}")
+                    last_error_alert = now_monotonic
+                if stop_event.wait(10):
+                    break
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        lock_file.close()
 
 def cmd_report(args):
     """查詢當前帳戶資產與歷史波段獲利戰績"""
