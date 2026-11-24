@@ -437,6 +437,7 @@ class SmartRotationTrader:
                 ]
                 cd_note = f" [防雙巴冷卻: {', '.join(active_cds)}]" if active_cds else ""
                 detail = f"🛡️ 【大盤天氣過濾】{btc_regime['reason']}！全網 100% USDT 空倉防守避開假突破！{cd_note}"
+                self._save_state()
                 return {
                     "timestamp": now_str,
                     "phase": "WAIT",

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from dashboard import redact_log_line, rotation_command
 from dashboard_control import load_control_state, set_new_entries_paused
@@ -62,6 +62,32 @@ class DashboardControlTests(unittest.TestCase):
 
         self.assertEqual(status["phase"], "WAIT")
         self.assertIn("已暫停新進場", status["detail"])
+
+    def test_bearish_btc_filter_persists_status_timestamp(self):
+        trader = object.__new__(SmartRotationTrader)
+        trader.has_position = False
+        trader.active_symbol = None
+        trader.position = None
+        trader.balance_usdt = 50.0
+        trader.cooldown_until = {}
+        trader.daily_risk = SimpleNamespace(
+            pause_reason=None,
+            start_day=lambda *_args: None,
+        )
+        trader._save_state = Mock()
+        trader.check_btc_regime = lambda: {
+            "is_bullish": False,
+            "reason": "測試大盤偏弱",
+        }
+
+        with patch(
+            "rotation_trader.load_control_state",
+            return_value={"pause_new_entries": False},
+        ):
+            status = trader.run_cycle()
+
+        self.assertEqual(status["phase"], "WAIT")
+        trader._save_state.assert_called_once_with()
 
 
 if __name__ == "__main__":
